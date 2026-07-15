@@ -42,7 +42,9 @@ class PixelRuinsMap:
         self.surface = self.world_surface
         self.layout = self._load_layout()
         self.collision_zones = self._rectangles_from_layout('collision_zones')
-        self.tunnels = self._rectangles_from_layout('tunnels')
+        self.tunnel_zones = self._tunnels_from_layout()
+        self.tunnels = [tunnel['rect'] for tunnel in self.tunnel_zones]
+        self.floors = self._regions_from_layout('floors')
         self.map_boundaries = self._lines_from_layout('map_boundaries')
         self.stairs = self._stairs_from_layout()
         self.stairs = self._regions_from_layout('stairs')
@@ -103,6 +105,44 @@ class PixelRuinsMap:
             if rect.width > 0 and rect.height > 0:
                 rectangles.append(rect)
         return rectangles
+
+    def _tunnels_from_layout(self):
+        tunnels = []
+        for tunnel in self.layout.get('tunnels', []):
+            if not isinstance(tunnel, dict):
+                continue
+            rect_data = tunnel.get('rect', [])
+            if not isinstance(rect_data, list) or len(rect_data) != 4:
+                continue
+            rect = pygame.Rect(*(int(value) for value in rect_data))
+            if rect.width <= 0 or rect.height <= 0:
+                continue
+            start_line, end_line = tunnel.get('start_line'), tunnel.get('end_line')
+            if not (isinstance(start_line, list) and isinstance(end_line, list) and len(start_line) == len(end_line) == 2):
+                start_line = [[rect.left, rect.top], [rect.left, rect.bottom]]
+                end_line = [[rect.right, rect.top], [rect.right, rect.bottom]]
+            tunnels.append({
+                'rect': rect,
+                'start_line': tuple(tuple(int(value) for value in point) for point in start_line),
+                'end_line': tuple(tuple(int(value) for value in point) for point in end_line),
+                'floor': max(0, int(tunnel.get('floor', 0))),
+            })
+        return tunnels
+
+    @staticmethod
+    def _tunnel_side_lines(tunnel):
+        """Return the two rails parallel to travel through an A→B tunnel."""
+        start, end = tunnel['start_line'], tunnel['end_line']
+        # Vertical end lines mean travel is horizontal, so rails are top/bottom.
+        if abs(start[0][0] - start[1][0]) < abs(start[0][1] - start[1][1]):
+            return ((start[0], end[0]), (start[1], end[1]))
+        # Horizontal end lines mean travel is vertical, so rails are left/right.
+        return ((start[0], end[0]), (start[1], end[1]))
+
+    def tunnel_side_collision_rects(self, index):
+        if not 0 <= index < len(self.tunnel_zones):
+            return []
+        return self._line_collision_rects(self._tunnel_side_lines(self.tunnel_zones[index]), thickness=8)
 
     def _regions_from_layout(self, key):
         regions = []
@@ -222,4 +262,18 @@ class PixelRuinsMap:
             ):
                 if self._segments_intersect(previous_point, current_point, line[0], line[1]):
                     return {'floor': stair[floor_key], 'zoom': stair[zoom_key]}
+        return None
+
+    def tunnel_end_line_crossed(self, previous_point, current_point):
+        """Return the tunnel index when a player crosses one of its end lines."""
+        for index, tunnel in enumerate(self.tunnel_zones):
+            for line in (tunnel['start_line'], tunnel['end_line']):
+                if self._segments_intersect(previous_point, current_point, line[0], line[1]):
+                    return index
+        return None
+
+    def floor_at(self, world_position):
+        for floor in self.floors:
+            if floor['rect'].collidepoint(world_position):
+                return floor
         return None

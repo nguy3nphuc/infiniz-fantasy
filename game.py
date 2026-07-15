@@ -21,7 +21,8 @@ from config import (WIDTH, HEIGHT, FPS, MAP_IMAGE, MIN_Y, MAX_Y,
                      BERSERK_VIAL_DROP_CHANCE, BERSERK_VIAL_DURATION_MS,
                      BERSERK_DAMAGE_MULTIPLIER, BERSERK_ARMOR_EFFECTIVENESS_MULTIPLIER,
                      HOLY_EFFECT_DURATION_MS, PIXEL_RUINS_CAMERA_ZOOM,
-                     PIXEL_RUINS_ENTITY_SCALE, PIXEL_RUINS_TUNNEL_ENTITY_ALPHA)
+                     PIXEL_RUINS_ENTITY_SCALE, PIXEL_RUINS_TUNNEL_ENTITY_ALPHA,
+                     PIXEL_RUINS_FOOTBOX_WIDTH_RATIO, PIXEL_RUINS_FOOTBOX_HEIGHT_RATIO)
 from entities import (Knight, Archer, Lizardman, Cyclop, Kobold, Fireworm, DamageNumber,
                        GoblinWarrior, GoblinSpearman, GoblinTank,
                        FatCultist, DeathBringer,
@@ -1866,14 +1867,17 @@ class Game:
 
     def _resolve_map_collision(self, entity, previous_rect, previous_hurtbox):
         """Keep an entity out of walls while allowing natural wall sliding."""
-        if not self.map_collision_rects or not hasattr(entity, 'hurtbox'):
+        if not hasattr(entity, 'hurtbox'):
+            return
+        walls = self.map_collision_rects + self._entity_tunnel_side_walls(entity)
+        if not walls:
             return
         # A newly tuned layout can be reloaded while an entity is already
         # inside a marker collider. Do not trap it forever: let it move until
         # it exits, then apply normal blocking again on later wall entries.
-        if any(previous_hurtbox.colliderect(wall) for wall in self.map_collision_rects):
+        if any(previous_hurtbox.colliderect(wall) for wall in walls):
             return
-        if not any(entity.hurtbox.colliderect(wall) for wall in self.map_collision_rects):
+        if not any(entity.hurtbox.colliderect(wall) for wall in walls):
             return
 
         current_rect = entity.rect.copy()
@@ -1883,7 +1887,7 @@ class Game:
         # vertical movement remains, so the entity slides along the wall.
         entity.rect.x = previous_rect.x
         entity.hurtbox.x = previous_hurtbox.x
-        if not any(entity.hurtbox.colliderect(wall) for wall in self.map_collision_rects):
+        if not any(entity.hurtbox.colliderect(wall) for wall in walls):
             return
 
         # Otherwise restore X and cancel vertical movement only.
@@ -1891,7 +1895,7 @@ class Game:
         entity.hurtbox = current_hurtbox
         entity.rect.y = previous_rect.y
         entity.hurtbox.y = previous_hurtbox.y
-        if not any(entity.hurtbox.colliderect(wall) for wall in self.map_collision_rects):
+        if not any(entity.hurtbox.colliderect(wall) for wall in walls):
             return
 
         # Movement entered a closed corner: restore the prior safe position.
@@ -1899,30 +1903,56 @@ class Game:
         entity.hurtbox = previous_hurtbox
 
     def _fit_phase4_hurtbox(self, entity):
-        """Match logical collision size to the reduced Phase 4 sprite size."""
+        """Use a compact foot-level collision box in the top-down map."""
         if self.selected_phase != 4 or not hasattr(entity, 'hurtbox'):
             return
         if not hasattr(entity, '_phase4_base_hurtbox_size'):
             entity._phase4_base_hurtbox_size = entity.hurtbox.size
         base_width, base_height = entity._phase4_base_hurtbox_size
-        # Sprites are rendered at ENTITY_SCALE, whereas world rectangles are
-        # projected through camera zoom. Divide by that zoom so the on-screen
-        # logical box hugs the visible sprite instead of towering over it.
+        # The map needs a footprint, not a full body combat box. It is scaled
+        # for the reduced Phase 4 sprite and anchored at the feet.
         scale = PIXEL_RUINS_ENTITY_SCALE / max(0.01, self.world_zoom)
-        desired_size = (max(10, round(base_width * scale)), max(14, round(base_height * scale)))
+        desired_size = (
+            max(12, round(base_width * scale * PIXEL_RUINS_FOOTBOX_WIDTH_RATIO)),
+            max(10, round(base_height * scale * PIXEL_RUINS_FOOTBOX_HEIGHT_RATIO)),
+        )
         if entity.hurtbox.size != desired_size:
             feet = entity.hurtbox.midbottom
             entity.hurtbox.size = desired_size
             entity.hurtbox.midbottom = feet
 
     def _entity_is_in_tunnel(self, entity):
-        """Whether a character is passing under a tuner-authored tunnel."""
-        return (
-            self.selected_phase == 4
-            and self.pixel_ruins_map is not None
-            and hasattr(entity, 'hurtbox')
-            and any(tunnel.collidepoint(entity.hurtbox.center) for tunnel in self.pixel_ruins_map.tunnels)
-        )
+        """True only after the entity entered through a tunnel end line."""
+        if self.selected_phase != 4 or not self.pixel_ruins_map or not hasattr(entity, 'hurtbox'):
+            return False
+        index = getattr(entity, '_phase4_tunnel_index', None)
+        return isinstance(index, int) and 0 <= index < len(self.pixel_ruins_map.tunnel_zones) and self.pixel_ruins_map.tunnel_zones[index]['rect'].collidepoint(entity.hurtbox.center)
+
+    def _entity_tunnel_side_walls(self, entity):
+        if self.selected_phase != 4 or not self.pixel_ruins_map:
+            return []
+        index = getattr(entity, '_phase4_tunnel_index', None)
+        if not isinstance(index, int):
+            return []
+        return self.pixel_ruins_map.tunnel_side_collision_rects(index)
+
+    def _update_tunnel_traversal(self, entity, previous_hurtbox):
+        """Toggle underpass state only when crossing a tunnel A/B line."""
+        if self.selected_phase != 4 or not self.pixel_ruins_map or not hasattr(entity, 'hurtbox'):
+            return
+        index = self.pixel_ruins_map.tunnel_end_line_crossed(previous_hurtbox.center, entity.hurtbox.center)
+        if index is not None:
+            entity._phase4_tunnel_index = None if getattr(entity, '_phase4_tunnel_index', None) == index else index
+
+    def _update_entity_region_floor(self, entity):
+        """Record authored floor/tunnel membership for future map mechanics."""
+        if self.selected_phase != 4 or not self.pixel_ruins_map or not hasattr(entity, 'hurtbox'):
+            return
+        floor = self.pixel_ruins_map.floor_at(entity.hurtbox.center)
+        entity.map_region_floor = int(floor.get('floor', 0)) if floor else None
+        tunnel_index = getattr(entity, '_phase4_tunnel_index', None)
+        if isinstance(tunnel_index, int) and 0 <= tunnel_index < len(self.pixel_ruins_map.tunnel_zones):
+            entity.map_region_floor = self.pixel_ruins_map.tunnel_zones[tunnel_index]['floor']
 
     def _update_player_stair_floor(self, player, previous_hurtbox):
         """Switch floor when a player crosses either end line of a stair box."""
@@ -2411,7 +2441,9 @@ class Game:
             player.update(dt, keys, self.groups)
             self._fit_phase4_hurtbox(player)
             self._resolve_map_collision(player, previous_rect, previous_hurtbox)
+            self._update_tunnel_traversal(player, previous_hurtbox)
             self._update_player_stair_floor(player, previous_hurtbox)
+            self._update_entity_region_floor(player)
 
         # update enemies
         for e in list(self.enemies):
@@ -2426,6 +2458,8 @@ class Game:
             e.update(dt, target, self.groups)
             self._fit_phase4_hurtbox(e)
             self._resolve_map_collision(e, previous_rect, previous_hurtbox)
+            self._update_tunnel_traversal(e, previous_hurtbox)
+            self._update_entity_region_floor(e)
 
         self._update_world_camera()
 
@@ -3290,9 +3324,18 @@ class Game:
                     overlay.fill((255, 65, 65, 42))
                     self.screen.blit(overlay, screen_zone.topleft)
                     pygame.draw.rect(self.screen, (255, 90, 90), screen_zone, 1)
+                for floor in self.pixel_ruins_map.floors:
+                    floor_rect = world_rect_to_screen(floor['rect'])
+                    pygame.draw.rect(self.screen, (75, 185, 255), floor_rect, 2)
+                    self.screen.blit(pygame.font.SysFont('Consolas', 14, bold=True).render(f"T{floor.get('floor', 0)}", True, (75, 185, 255)), (floor_rect.x + 3, floor_rect.y + 3))
                 # Purple: tunnel regions that remove collision from red zones.
                 for tunnel in self.pixel_ruins_map.tunnels:
                     pygame.draw.rect(self.screen, (190, 105, 255), world_rect_to_screen(tunnel), 2)
+                for tunnel in self.pixel_ruins_map.tunnel_zones:
+                    for line, color, label in ((tunnel['start_line'], (85, 255, 170), 'A'), (tunnel['end_line'], (255, 95, 145), 'B')):
+                        start, end = world_to_screen(*line[0]), world_to_screen(*line[1])
+                        pygame.draw.line(self.screen, color, start, end, 5)
+                        self.screen.blit(pygame.font.SysFont('Consolas', 14, bold=True).render(label, True, (20, 20, 20)), (start[0] + 4, start[1] + 4))
                 # Yellow: free-form boundary lines authored with mode 6.
                 for start, end in self.pixel_ruins_map.map_boundaries:
                     pygame.draw.line(self.screen, (255, 230, 80), world_to_screen(*start), world_to_screen(*end), 3)
@@ -3317,6 +3360,9 @@ class Game:
                     if sprite in self.players:
                         color = (70, 210, 255) if sprite is self.players[0] else (255, 180, 65)
                     pygame.draw.rect(self.screen, color, world_rect_to_screen(r), 2)
+                    if hasattr(sprite, 'map_region_floor') and sprite.map_region_floor is not None:
+                        label = pygame.font.SysFont('Consolas', 13, bold=True).render(f"T{sprite.map_region_floor}", True, color)
+                        self.screen.blit(label, (world_rect_to_screen(r).x, world_rect_to_screen(r).y - 14))
             # Red: player attack hitboxes
             for hb in self.attacks:
                 r = hb.rect

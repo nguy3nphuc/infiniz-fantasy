@@ -103,6 +103,15 @@ class CollisionMapPreview:
             self._draw_overlay_rect(rect, (255, 70, 70), 42)
         for rect in self.map_data.tunnels:
             self._draw_overlay_rect(rect, (190, 105, 255), 72, 2)
+        for floor in self.map_data.floors:
+            rect = self._screen_rect(floor['rect'])
+            pygame.draw.rect(self.screen, (75, 185, 255), rect, 2)
+            self.screen.blit(self.small_font.render(f"T{floor.get('floor', 0)}", True, (75, 185, 255)), (rect.x + 3, rect.y + 3))
+        for tunnel in self.map_data.tunnel_zones:
+            for end_line, color in ((tunnel['start_line'], (85, 255, 170)), (tunnel['end_line'], (255, 95, 145))):
+                start = (round((end_line[0][0] - self.camera.x) * self.zoom), round((end_line[0][1] - self.camera.y) * self.zoom))
+                end = (round((end_line[1][0] - self.camera.x) * self.zoom), round((end_line[1][1] - self.camera.y) * self.zoom))
+                pygame.draw.line(self.screen, color, start, end, 5)
         for start, end in self.map_data.map_boundaries:
             pygame.draw.line(self.screen, (80, 235, 255),
                              ((start[0] - self.camera.x) * self.zoom, (start[1] - self.camera.y) * self.zoom),

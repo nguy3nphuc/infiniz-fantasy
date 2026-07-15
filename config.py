@@ -236,6 +236,10 @@ PIXEL_RUINS_ENTITY_SCALE = 0.68
 # Characters inside a tuner-authored tunnel are drawn beneath the upper map
 # layer by fading them, creating a simple underpass effect.
 PIXEL_RUINS_TUNNEL_ENTITY_ALPHA = 115
+# Phase 4 map collision uses a compact footprint at character feet instead of
+# the full combat hurtbox, which keeps top-down wall movement natural.
+PIXEL_RUINS_FOOTBOX_WIDTH_RATIO = 0.70
+PIXEL_RUINS_FOOTBOX_HEIGHT_RATIO = 0.28
 
 
 # Skill drop tuning by enemy tier.
