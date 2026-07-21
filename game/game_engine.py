@@ -5,708 +5,18 @@ import random
 import os
 import json
 from types import SimpleNamespace
-from pixel_ruins_map import PixelRuinsMap
-from config import (WIDTH, HEIGHT, FPS, MAP_IMAGE, MIN_Y, MAX_Y,
-                     CRIT_CHANCE, CRIT_MULTIPLIER,
-                     CAMERA_SHAKE_INTENSITY, CAMERA_SHAKE_DURATION,
-                     PLAYER_RESOURCE_PRESETS, PLAYER_RESOURCE_REGEN_PER_MS,
-                     SKILL_MANA_COST, DEFAULT_ARMOR_REDUCTION_PCT,
-                     SKILL_EFFECT_CONFIG, SKILL_DROP_CONFIG,
-                     SKILL_COMBAT_CONFIG,
-                     ABILITY_VIAL_DROP_CHANCE, ABILITY_MAX_LEVEL,
-                     ABILITY_ATTACK_BONUS_PER_LEVEL, ABILITY_ARMOR_BONUS_PER_LEVEL,
-                     ABILITY_SPEED_BONUS_PER_LEVEL, ARCHER_ARROW_CONFIG,
-                     BERSERK_VIAL_DROP_CHANCE, BERSERK_VIAL_DURATION_MS,
-                     BERSERK_DAMAGE_MULTIPLIER, BERSERK_ARMOR_EFFECTIVENESS_MULTIPLIER,
-                     HOLY_EFFECT_DURATION_MS)
+from tools.pixel_ruins_map import PixelRuinsMap
+from config import * # (Import toàn bộ từ config)
+
 from entities import (Knight, Archer, Lizardman, Cyclop, Kobold, Fireworm, DamageNumber,
-                       GoblinWarrior, GoblinSpearman, GoblinTank,
-                       FatCultist, DeathBringer,
-                       DashSmoke, UltimateEffect, KnightUltimateShockwave, BloodVFX, HitVFX,
-                       HealthPotion, AbilityVial, BerserkVial, SkillIcon)
-
-
-class SkillEffect(pygame.sprite.Sprite):
-    """Generic one-shot animated VFX for passive skills."""
-
-    _frames_cache = {}
-
-    CONFIG = SKILL_EFFECT_CONFIG
-
-    def __init__(self, skill_name, x, y, facing=1):
-        super().__init__()
-        self.skill_name = skill_name
-        self.facing = facing
-        cfg = self.CONFIG.get(skill_name, self.CONFIG['fire'])
-        self.anchor_bottom = bool(cfg.get('anchor_bottom', False))
-        self.frame_ms = cfg.get('frame_ms', 50)
-        self.timer = 0
-        self.frame_idx = 0
-
-        frames = self._get_frames(skill_name)
-        if not frames:
-            self._frames = [pygame.Surface((8, 8), pygame.SRCALPHA)]
-        else:
-            self._frames = frames
-
-        if facing == -1:
-            self._frames = [pygame.transform.flip(f, True, False) for f in self._frames]
-
-        self.image = self._frames[0]
-        if self.anchor_bottom:
-            self.rect = self.image.get_rect(midbottom=(x, y))
-        else:
-            self.rect = self.image.get_rect(center=(x, y))
-
-    @property
-    def floor_y(self):
-        return self.rect.bottom
-
-    @classmethod
-    def _get_frames(cls, skill_name):
-        if skill_name in cls._frames_cache:
-            return cls._frames_cache[skill_name]
-
-        cfg = cls.CONFIG.get(skill_name, cls.CONFIG['fire'])
-        abs_path = os.path.join(os.path.dirname(__file__), cfg['path'])
-        frames = []
-
-        try:
-            sheet = pygame.image.load(abs_path).convert_alpha()
-            fw = int(cfg.get('frame_w', sheet.get_height()))
-            fh = int(cfg.get('frame_h', sheet.get_height()))
-            src_y = int(cfg.get('src_y', 0))
-            src_h = int(cfg.get('src_h', fh))
-            row_start = int(cfg.get('row_start', 0))
-            row_count = int(cfg.get('row_count', 0))
-            col_start = int(cfg.get('col_start', 0))
-            col_count = int(cfg.get('col_count', 0))
-            src_h = max(1, min(src_h, fh))
-            src_y = max(0, min(src_y, fh - src_h))
-            scale = float(cfg.get('scale', 1.0))
-            vertical = bool(cfg.get('vertical', False))
-
-            if vertical:
-                rows = max(1, sheet.get_height() // fh)
-                row_start = max(0, min(row_start, rows - 1))
-                row_end = rows if row_count <= 0 else min(rows, row_start + row_count)
-                for r in range(row_start, row_end):
-                    sub = pygame.Surface((fw, src_h), pygame.SRCALPHA)
-                    sub.blit(sheet, (0, 0), (0, r * fh + src_y, fw, src_h))
-                    if scale != 1.0:
-                        sub = pygame.transform.scale(sub, (max(1, int(fw * scale)), max(1, int(src_h * scale))))
-                    frames.append(sub)
-            else:
-                cols = max(1, sheet.get_width() // fw)
-                rows = max(1, sheet.get_height() // fh)
-                row_start = max(0, min(row_start, rows - 1))
-                col_start = max(0, min(col_start, cols - 1))
-                row_end = rows if row_count <= 0 else min(rows, row_start + row_count)
-                col_end = cols if col_count <= 0 else min(cols, col_start + col_count)
-                for r in range(row_start, row_end):
-                    for c in range(col_start, col_end):
-                        sub = pygame.Surface((fw, src_h), pygame.SRCALPHA)
-                        sub.blit(sheet, (0, 0), (c * fw, r * fh + src_y, fw, src_h))
-                        if scale != 1.0:
-                            sub = pygame.transform.scale(sub, (max(1, int(fw * scale)), max(1, int(src_h * scale))))
-                        frames.append(sub)
-        except Exception:
-            frames = []
-
-        cls._frames_cache[skill_name] = frames
-        return frames
-
-    def update(self, dt):
-        self.timer += dt
-        while self.timer >= self.frame_ms:
-            self.timer -= self.frame_ms
-            self.frame_idx += 1
-            if self.frame_idx >= len(self._frames):
-                self.kill()
-                return
-            anchor = self.rect.midbottom if self.anchor_bottom else self.rect.center
-            self.image = self._frames[self.frame_idx]
-            if self.anchor_bottom:
-                self.rect = self.image.get_rect(midbottom=anchor)
-            else:
-                self.rect = self.image.get_rect(center=anchor)
-
-
-class WindStreamEffect(pygame.sprite.Sprite):
-    """Directional wind projectile that travels outward and can collide."""
-
-    _frames_cache = None
-
-    @classmethod
-    def _get_projectile_frames(cls):
-        if cls._frames_cache is not None:
-            return cls._frames_cache
-
-        path = os.path.join(
-            os.path.dirname(__file__),
-            'assets', 'skills', 'effects', 'Wind Effect 01', 'Wind Projectile.png'
-        )
-        frames = []
-        try:
-            sheet = pygame.image.load(path).convert_alpha()
-            fw, fh = 32, 32
-            cols = max(1, sheet.get_width() // fw)
-            rows = max(1, sheet.get_height() // fh)
-            for r in range(rows):
-                for c in range(cols):
-                    sub = pygame.Surface((fw, fh), pygame.SRCALPHA)
-                    sub.blit(sheet, (0, 0), (c * fw, r * fh, fw, fh))
-                    frames.append(pygame.transform.scale(sub, (56, 56)))
-        except Exception:
-            frames = []
-
-        cls._frames_cache = frames
-        return cls._frames_cache
-
-    def __init__(self, x, y, dir_x, dir_y, owner=None, damage=12, speed_px_per_ms=0.80, life_ms=320):
-        super().__init__()
-        base_frames = self._get_projectile_frames()
-        if not base_frames:
-            base_frames = [pygame.Surface((8, 8), pygame.SRCALPHA)]
-
-        self._frames = base_frames
-        if dir_x < 0:
-            self._frames = [pygame.transform.flip(frame, True, False) for frame in self._frames]
-
-        self.frame_ms = 45
-        self.timer = 0
-        self.frame_idx = 0
-        self.image = self._frames[0]
-        self.rect = self.image.get_rect(center=(x, y))
-
-        vec = pygame.math.Vector2(dir_x, dir_y)
-        if vec.length_squared() <= 0:
-            vec = pygame.math.Vector2(1, 0)
-        vec = vec.normalize()
-
-        self.vel = vec * speed_px_per_ms
-        self.life_ms = life_ms
-        self.owner = owner
-        self.damage = int(damage)
-        self.already_hit_targets = set()
-
-    @property
-    def floor_y(self):
-        return self.rect.bottom
-
-    def update(self, dt):
-        self.life_ms -= dt
-        if self.life_ms <= 0:
-            self.kill()
-            return
-
-        self.rect.x += int(self.vel.x * dt)
-        self.rect.y += int(self.vel.y * dt)
-
-        self.timer += dt
-        while self.timer >= self.frame_ms:
-            self.timer -= self.frame_ms
-            if self.frame_idx < len(self._frames) - 1:
-                self.frame_idx += 1
-                center = self.rect.center
-                self.image = self._frames[self.frame_idx]
-                self.rect = self.image.get_rect(center=center)
-
-        if self.rect.right < -48 or self.rect.left > WIDTH + 48 or self.rect.bottom < -48 or self.rect.top > HEIGHT + 48:
-            self.kill()
-
-
-class WaterBallProjectile(pygame.sprite.Sprite):
-    """Water ball projectile that uses startup/infinite sheet while flying."""
-
-    _frames_cache = None
-
-    @classmethod
-    def _get_projectile_frames(cls):
-        if cls._frames_cache is not None:
-            return cls._frames_cache
-
-        path = os.path.join(
-            os.path.dirname(__file__),
-            'assets', 'skills', 'effects', 'Water Ball - Spritesheet', 'WaterBall - Startup and Infinite.png'
-        )
-        frames = []
-        try:
-            sheet = pygame.image.load(path).convert_alpha()
-            fw, fh = 64, 64
-            cols = max(1, sheet.get_width() // fw)
-            rows = max(1, sheet.get_height() // fh)
-            for r in range(rows):
-                for c in range(cols):
-                    sub = pygame.Surface((fw, fh), pygame.SRCALPHA)
-                    sub.blit(sheet, (0, 0), (c * fw, r * fh, fw, fh))
-                    frames.append(pygame.transform.scale(sub, (72, 72)))
-        except Exception:
-            frames = []
-
-        cls._frames_cache = frames
-        return cls._frames_cache
-
-    def __init__(self, x, y, dir_x, dir_y, owner=None, damage=13, speed_px_per_ms=0.70, life_ms=700):
-        super().__init__()
-        base_frames = self._get_projectile_frames()
-        if not base_frames:
-            base_frames = [pygame.Surface((10, 10), pygame.SRCALPHA)]
-
-        self._frames = base_frames
-        self.frame_ms = 45
-        self.timer = 0
-        self.frame_idx = 0
-        self.image = self._frames[0]
-        self.rect = self.image.get_rect(center=(x, y))
-
-        vec = pygame.math.Vector2(dir_x, dir_y)
-        if vec.length_squared() <= 0:
-            vec = pygame.math.Vector2(1, 0)
-        vec = vec.normalize()
-
-        self.vel = vec * speed_px_per_ms
-        self.life_ms = life_ms
-        self.owner = owner
-        self.damage = int(damage)
-        self.already_hit_targets = set()
-
-    @property
-    def floor_y(self):
-        return self.rect.bottom
-
-    def update(self, dt):
-        self.life_ms -= dt
-        if self.life_ms <= 0:
-            self.kill()
-            return
-
-        self.rect.x += int(self.vel.x * dt)
-        self.rect.y += int(self.vel.y * dt)
-
-        self.timer += dt
-        while self.timer >= self.frame_ms:
-            self.timer -= self.frame_ms
-            self.frame_idx = (self.frame_idx + 1) % len(self._frames)
-            center = self.rect.center
-            self.image = self._frames[self.frame_idx]
-            self.rect = self.image.get_rect(center=center)
-
-        if self.rect.right < -72 or self.rect.left > WIDTH + 72 or self.rect.bottom < -72 or self.rect.top > HEIGHT + 72:
-            self.kill()
-
-
-class WaterBlastProjectile(pygame.sprite.Sprite):
-    """Water blast projectile: startup frames once, then loop infinity frames."""
-
-    _frames_cache = None
-
-    @classmethod
-    def _get_projectile_frames(cls):
-        if cls._frames_cache is not None:
-            return cls._frames_cache
-
-        path = os.path.join(
-            os.path.dirname(__file__),
-            'assets', 'skills', 'effects', 'Water Blast - Spritesheet', 'Water Blast - Startup and Infinite.png'
-        )
-        frames = []
-        try:
-            sheet = pygame.image.load(path).convert_alpha()
-            fw, fh = 128, 128
-            cols = max(1, sheet.get_width() // fw)
-            rows = max(1, sheet.get_height() // fh)
-            for r in range(rows):
-                for c in range(cols):
-                    sub = pygame.Surface((fw, fh), pygame.SRCALPHA)
-                    sub.blit(sheet, (0, 0), (c * fw, r * fh, fw, fh))
-                    frames.append(pygame.transform.scale(sub, (96, 96)))
-        except Exception:
-            frames = []
-
-        cls._frames_cache = frames
-        return cls._frames_cache
-
-    def __init__(self, x, y, dir_x, dir_y, owner=None, damage=20, speed_px_per_ms=0.74, life_ms=820):
-        super().__init__()
-        base_frames = self._get_projectile_frames()
-        if not base_frames:
-            base_frames = [pygame.Surface((12, 12), pygame.SRCALPHA)]
-
-        self._frames = base_frames
-        if dir_x < 0:
-            self._frames = [pygame.transform.flip(frame, True, False) for frame in self._frames]
-
-        # Frame 0-3: startup progression, frame 3..end: repeatable loop.
-        self.loop_start_idx = min(3, len(self._frames) - 1)
-        self.frame_ms = 52
-        self.timer = 0
-        self.frame_idx = 0
-        self.image = self._frames[0]
-        self.rect = self.image.get_rect(center=(x, y))
-
-        vec = pygame.math.Vector2(dir_x, dir_y)
-        if vec.length_squared() <= 0:
-            vec = pygame.math.Vector2(1, 0)
-        vec = vec.normalize()
-
-        self.vel = vec * speed_px_per_ms
-        self.life_ms = life_ms
-        self.owner = owner
-        self.damage = int(damage)
-        self.already_hit_targets = set()
-
-    @property
-    def floor_y(self):
-        return self.rect.bottom
-
-    def update(self, dt):
-        self.life_ms -= dt
-        if self.life_ms <= 0:
-            self.kill()
-            return
-
-        self.rect.x += int(self.vel.x * dt)
-        self.rect.y += int(self.vel.y * dt)
-
-        self.timer += dt
-        while self.timer >= self.frame_ms:
-            self.timer -= self.frame_ms
-            if self.frame_idx < self.loop_start_idx:
-                self.frame_idx += 1
-            else:
-                self.frame_idx += 1
-                if self.frame_idx >= len(self._frames):
-                    self.frame_idx = self.loop_start_idx
-
-            center = self.rect.center
-            self.image = self._frames[self.frame_idx]
-            self.rect = self.image.get_rect(center=center)
-
-        if self.rect.right < -96 or self.rect.left > WIDTH + 96 or self.rect.bottom < -96 or self.rect.top > HEIGHT + 96:
-            self.kill()
-
-
-class LightProjectile(pygame.sprite.Sprite):
-    """Light projectile that uses Holy VFX 01 Repeatable while flying."""
-
-    _frames_cache = None
-
-    @classmethod
-    def _get_projectile_frames(cls):
-        if cls._frames_cache is not None:
-            return cls._frames_cache
-
-        path = os.path.join(
-            os.path.dirname(__file__),
-            'assets', 'skills', 'effects', 'Holy VFX 01', 'Holy VFX 01 Repeatable.png'
-        )
-        frames = []
-        try:
-            sheet = pygame.image.load(path).convert_alpha()
-            fw, fh = 32, 32
-            cols = max(1, sheet.get_width() // fw)
-            rows = max(1, sheet.get_height() // fh)
-            for r in range(rows):
-                for c in range(cols):
-                    sub = pygame.Surface((fw, fh), pygame.SRCALPHA)
-                    sub.blit(sheet, (0, 0), (c * fw, r * fh, fw, fh))
-                    frames.append(pygame.transform.scale(sub, (62, 62)))
-        except Exception:
-            frames = []
-
-        cls._frames_cache = frames
-        return cls._frames_cache
-
-    def __init__(self, x, y, dir_x, dir_y, owner=None, damage=17, speed_px_per_ms=0.86, life_ms=720):
-        super().__init__()
-        base_frames = self._get_projectile_frames()
-        if not base_frames:
-            base_frames = [pygame.Surface((10, 10), pygame.SRCALPHA)]
-
-        self._frames = base_frames
-        if dir_x < 0:
-            self._frames = [pygame.transform.flip(frame, True, False) for frame in self._frames]
-
-        self.frame_ms = 42
-        self.timer = 0
-        self.frame_idx = 0
-        self.image = self._frames[0]
-        self.rect = self.image.get_rect(center=(x, y))
-
-        vec = pygame.math.Vector2(dir_x, dir_y)
-        if vec.length_squared() <= 0:
-            vec = pygame.math.Vector2(1, 0)
-        vec = vec.normalize()
-
-        self.vel = vec * speed_px_per_ms
-        self.life_ms = life_ms
-        self.owner = owner
-        self.damage = int(damage)
-        self.already_hit_targets = set()
-
-    @property
-    def floor_y(self):
-        return self.rect.bottom
-
-    def update(self, dt):
-        self.life_ms -= dt
-        if self.life_ms <= 0:
-            self.kill()
-            return
-
-        self.rect.x += int(self.vel.x * dt)
-        self.rect.y += int(self.vel.y * dt)
-
-        self.timer += dt
-        while self.timer >= self.frame_ms:
-            self.timer -= self.frame_ms
-            self.frame_idx = (self.frame_idx + 1) % len(self._frames)
-            center = self.rect.center
-            self.image = self._frames[self.frame_idx]
-            self.rect = self.image.get_rect(center=center)
-
-        if self.rect.right < -72 or self.rect.left > WIDTH + 72 or self.rect.bottom < -72 or self.rect.top > HEIGHT + 72:
-            self.kill()
-
-
-class DarkProjectile(pygame.sprite.Sprite):
-    """Dark projectile that flies first, then triggers dark hit effect on contact."""
-
-    _frames_cache = None
-
-    @classmethod
-    def _get_projectile_frames(cls):
-        if cls._frames_cache is not None:
-            return cls._frames_cache
-
-        path = os.path.join(
-            os.path.dirname(__file__),
-            'assets', 'skills', 'effects', 'Dark VFX 2', 'Dark VFX 1 (40x32).png'
-        )
-        frames = []
-        try:
-            sheet = pygame.image.load(path).convert_alpha()
-            fw, fh = 40, 32
-            cols = max(1, sheet.get_width() // fw)
-            rows = max(1, sheet.get_height() // fh)
-            for r in range(rows):
-                for c in range(cols):
-                    sub = pygame.Surface((fw, fh), pygame.SRCALPHA)
-                    sub.blit(sheet, (0, 0), (c * fw, r * fh, fw, fh))
-                    frames.append(pygame.transform.scale(sub, (72, 58)))
-        except Exception:
-            frames = []
-
-        cls._frames_cache = frames
-        return cls._frames_cache
-
-    def __init__(self, x, y, dir_x, dir_y, owner=None, damage=15, speed_px_per_ms=0.86, life_ms=680):
-        super().__init__()
-        base_frames = self._get_projectile_frames()
-        if not base_frames:
-            base_frames = [pygame.Surface((12, 10), pygame.SRCALPHA)]
-
-        self._frames = base_frames
-        if dir_x < 0:
-            self._frames = [pygame.transform.flip(frame, True, False) for frame in self._frames]
-
-        self.frame_ms = 42
-        self.timer = 0
-        self.frame_idx = 0
-        self.image = self._frames[0]
-        self.rect = self.image.get_rect(center=(x, y))
-
-        vec = pygame.math.Vector2(dir_x, dir_y)
-        if vec.length_squared() <= 0:
-            vec = pygame.math.Vector2(1, 0)
-        vec = vec.normalize()
-
-        self.vel = vec * speed_px_per_ms
-        self.life_ms = life_ms
-        self.owner = owner
-        self.damage = int(damage)
-        self.already_hit_targets = set()
-
-    @property
-    def floor_y(self):
-        return self.rect.bottom
-
-    def update(self, dt):
-        self.life_ms -= dt
-        if self.life_ms <= 0:
-            self.kill()
-            return
-
-        self.rect.x += int(self.vel.x * dt)
-        self.rect.y += int(self.vel.y * dt)
-
-        self.timer += dt
-        while self.timer >= self.frame_ms:
-            self.timer -= self.frame_ms
-            self.frame_idx = (self.frame_idx + 1) % len(self._frames)
-            center = self.rect.center
-            self.image = self._frames[self.frame_idx]
-            self.rect = self.image.get_rect(center=center)
-
-        if self.rect.right < -80 or self.rect.left > WIDTH + 80 or self.rect.bottom < -80 or self.rect.top > HEIGHT + 80:
-            self.kill()
-
-
-class WoodProjectile(pygame.sprite.Sprite):
-    """Wood projectile that flies first and triggers wood hit effect on contact."""
-
-    _frames_cache = None
-
-    @classmethod
-    def _get_projectile_frames(cls):
-        if cls._frames_cache is not None:
-            return cls._frames_cache
-
-        path = os.path.join(
-            os.path.dirname(__file__),
-            'assets', 'skills', 'effects', 'Wood VFX 01', 'Wood VFX 01 Repeatable.png'
-        )
-        frames = []
-        try:
-            sheet = pygame.image.load(path).convert_alpha()
-            fw, fh = 32, 32
-            cols = max(1, sheet.get_width() // fw)
-            rows = max(1, sheet.get_height() // fh)
-            for r in range(rows):
-                for c in range(cols):
-                    sub = pygame.Surface((fw, fh), pygame.SRCALPHA)
-                    sub.blit(sheet, (0, 0), (c * fw, r * fh, fw, fh))
-                    frames.append(pygame.transform.scale(sub, (62, 62)))
-        except Exception:
-            frames = []
-
-        cls._frames_cache = frames
-        return cls._frames_cache
-
-    def __init__(self, x, y, dir_x, dir_y, owner=None, damage=12, speed_px_per_ms=0.72, life_ms=760):
-        super().__init__()
-        base_frames = self._get_projectile_frames()
-        if not base_frames:
-            base_frames = [pygame.Surface((10, 10), pygame.SRCALPHA)]
-
-        self._frames = base_frames
-        if dir_x < 0:
-            self._frames = [pygame.transform.flip(frame, True, False) for frame in self._frames]
-
-        self.frame_ms = 44
-        self.timer = 0
-        self.frame_idx = 0
-        self.image = self._frames[0]
-        self.rect = self.image.get_rect(center=(x, y))
-
-        vec = pygame.math.Vector2(dir_x, dir_y)
-        if vec.length_squared() <= 0:
-            vec = pygame.math.Vector2(1, 0)
-        vec = vec.normalize()
-
-        self.vel = vec * speed_px_per_ms
-        self.life_ms = life_ms
-        self.owner = owner
-        self.damage = int(damage)
-        self.already_hit_targets = set()
-
-    @property
-    def floor_y(self):
-        return self.rect.bottom
-
-    def update(self, dt):
-        self.life_ms -= dt
-        if self.life_ms <= 0:
-            self.kill()
-            return
-
-        self.rect.x += int(self.vel.x * dt)
-        self.rect.y += int(self.vel.y * dt)
-
-        self.timer += dt
-        while self.timer >= self.frame_ms:
-            self.timer -= self.frame_ms
-            self.frame_idx = (self.frame_idx + 1) % len(self._frames)
-            center = self.rect.center
-            self.image = self._frames[self.frame_idx]
-            self.rect = self.image.get_rect(center=center)
-
-        if self.rect.right < -72 or self.rect.left > WIDTH + 72 or self.rect.bottom < -72 or self.rect.top > HEIGHT + 72:
-            self.kill()
-
-
-class AcidProjectile(pygame.sprite.Sprite):
-    """Acid projectile that flies first and applies acid passive on impact."""
-
-    _frames_cache = None
-
-    @classmethod
-    def _get_projectile_frames(cls):
-        if cls._frames_cache is not None:
-            return cls._frames_cache
-
-        path = os.path.join(
-            os.path.dirname(__file__),
-            'assets', 'skills', 'effects', 'Acid VFX 2', 'Acid VFX 02Repeatable.png'
-        )
-        frames = []
-        try:
-            sheet = pygame.image.load(path).convert_alpha()
-            fw, fh = 56, 64
-            lane_h = 32
-            rows = max(1, sheet.get_height() // fh)
-            for r in range(rows):
-                sub = pygame.Surface((fw, lane_h), pygame.SRCALPHA)
-                # Source frame contains two parallel lanes (top+bottom). Keep only top lane.
-                sub.blit(sheet, (0, 0), (0, r * fh, fw, lane_h))
-                frames.append(pygame.transform.scale(sub, (68, 40)))
-        except Exception:
-            frames = []
-
-        cls._frames_cache = frames
-        return cls._frames_cache
-
-    def __init__(self, x, y, dir_x, dir_y, owner=None, damage=12, speed_px_per_ms=0.68, life_ms=820):
-        super().__init__()
-        base_frames = self._get_projectile_frames()
-        if not base_frames:
-            base_frames = [pygame.Surface((10, 8), pygame.SRCALPHA)]
-
-        self._frames = base_frames
-        if dir_x < 0:
-            self._frames = [pygame.transform.flip(frame, True, False) for frame in self._frames]
-
-        self.image = self._frames[0]
-        self.rect = self.image.get_rect(center=(x, y))
-
-        vec = pygame.math.Vector2(dir_x, dir_y)
-        if vec.length_squared() <= 0:
-            vec = pygame.math.Vector2(1, 0)
-        vec = vec.normalize()
-
-        self.vel = vec * speed_px_per_ms
-        self.life_ms = life_ms
-        self.owner = owner
-        self.damage = int(damage)
-        self.already_hit_targets = set()
-
-    @property
-    def floor_y(self):
-        return self.rect.bottom
-
-    def update(self, dt):
-        self.life_ms -= dt
-        if self.life_ms <= 0:
-            self.kill()
-            return
-
-        self.rect.x += int(self.vel.x * dt)
-        self.rect.y += int(self.vel.y * dt)
-
-        if self.rect.right < -72 or self.rect.left > WIDTH + 72 or self.rect.bottom < -72 or self.rect.top > HEIGHT + 72:
-            self.kill()
-
+                      GoblinWarrior, GoblinSpearman, GoblinTank, FatCultist, DeathBringer,
+                      DashSmoke, UltimateEffect, KnightUltimateShockwave, BloodVFX, HitVFX,
+                      HealthPotion, AbilityVial, BerserkVial, SkillIcon)
+
+from .skills_projectiles import (SkillEffect, WindStreamEffect, WaterBallProjectile,
+                                 WaterBlastProjectile, LightProjectile, DarkProjectile,
+                                 WoodProjectile, AcidProjectile)
+from .respawn import PLAYER_RESPAWN_DELAY_MS, should_auto_respawn
 
 class Game:
     def __init__(self):
@@ -731,7 +41,8 @@ class Game:
 
         # Shadow sprite – drawn beneath every entity each frame
         import os as _os
-        _shadow_path = _os.path.join(_os.path.dirname(__file__), 'assets', 'shadow.png')
+        base_dir = os.path.dirname(os.path.dirname(__file__))
+        _shadow_path = os.path.join(base_dir, 'assets', 'shadow.png')
         try:
             self._shadow_src = pygame.image.load(_shadow_path).convert_alpha()
         except Exception:
@@ -776,13 +87,15 @@ class Game:
         self.skill_ui_test_mode = False
         self._skill_test_p1 = SimpleNamespace(skills=['water_ball', 'fire', 'wind'], target_skill_idx=0, active_skill=None)
         self._skill_test_p2 = SimpleNamespace(skills=['shield', 'holy', 'acid'], target_skill_idx=1, active_skill='shield')
+        self.player_respawn_delay_ms = PLAYER_RESPAWN_DELAY_MS
 
         self.knight_preview = Knight(pos=(WIDTH//3, HEIGHT//2 + 50))
         self.archer_preview = Archer(pos=(2*WIDTH//3, HEIGHT//2 + 50))
 
     def _load_skill_ui_assets(self):
         """Load prebuilt skill frame and target frame from assets/skills/frames."""
-        frames_dir = os.path.join(os.path.dirname(__file__), "assets", "skills", "frames")
+        base_dir = os.path.dirname(os.path.dirname(__file__)) 
+        frames_dir = os.path.join(base_dir, "assets", "skills", "frames")
         frame_path = os.path.join(frames_dir, "skill_frame.png")
         target_path = os.path.join(frames_dir, "target_skill.png")
 
@@ -829,7 +142,8 @@ class Game:
 
     def _load_skill_ui_tune_config(self):
         """Apply optional per-slot UI tuning from assets/skills/ui_tune.json."""
-        tune_path = os.path.join(os.path.dirname(__file__), 'assets', 'skills', 'ui_tune.json')
+        base_dir = os.path.dirname(os.path.dirname(__file__))
+        tune_path = os.path.join(base_dir, 'assets', 'skills', 'ui_tune.json')
         if not os.path.isfile(tune_path):
             return
 
@@ -1805,7 +1119,9 @@ class Game:
             Archer(pos=(2*WIDTH//3, HEIGHT-100)),
         ]
         self.player = self.players[0]
+        self.player_respawn_dead_at = {}
         for player in self.players:
+            player.respawn_pos = player.rect.midbottom
             self._ensure_player_resources(player)
             self._ensure_player_abilities(player)
         for player in self.players:
@@ -1952,6 +1268,72 @@ class Game:
         """Rebuild frame/target alignment after ratio-related changes."""
         self._skill_icon_cache.clear()
         self._skill_frame_img, self._skill_target_img = self._load_skill_ui_assets()
+
+    def _has_living_teammate(self, player):
+        return any(other is not player and getattr(other, 'hp', 0) > 0 for other in self.players)
+
+    def _start_player_respawn_timer(self, player, now_ms):
+        if getattr(player, 'respawn_dead_at', None) is None:
+            player.respawn_dead_at = now_ms
+
+    def _respawn_player(self, player):
+        if getattr(player, 'hp', 0) > 0:
+            return
+
+        if getattr(player, 'respawn_pos', None) is None:
+            player.respawn_pos = getattr(player, 'rect', None).midbottom if getattr(player, 'rect', None) is not None else (WIDTH // 2, HEIGHT - 100)
+
+        player.hp = player.max_hp
+        player.armor = player.max_armor
+        player.mana = player.max_mana
+        player.vel.x = 0
+        player.vel.y = 0
+        player.hurt_timer = 0
+        player.combo_step = 0
+        player.combo_buffered = False
+        player.exceeded_combo = False
+        player.attack_pressed_last = False
+        player.has_attacked = False
+        if hasattr(player, 'dash_cooldown'):
+            player.dash_cooldown = 0
+        if hasattr(player, 'dashing'):
+            player.dashing = False
+        if hasattr(player, '_ultimate_shockwave_spawned'):
+            player._ultimate_shockwave_spawned = False
+        if hasattr(player, '_ultimate_beam_spawned'):
+            player._ultimate_beam_spawned = False
+        if hasattr(player, 'rect') and player.respawn_pos is not None:
+            player.rect.midbottom = player.respawn_pos
+            if hasattr(player, 'hurtbox'):
+                player.hurtbox.midbottom = player.rect.midbottom
+        if getattr(player, 'animator', None) is not None:
+            player.animator.set_state('idle', reset=True)
+            if hasattr(player, '_apply_frame'):
+                player._apply_frame()
+        player.respawn_dead_at = None
+
+    def _update_player_respawn_state(self, player):
+        now_ms = pygame.time.get_ticks()
+        if getattr(player, 'hp', 0) > 0:
+            if getattr(player, 'respawn_dead_at', None) is not None:
+                player.respawn_dead_at = None
+            return
+
+        if not self._has_living_teammate(player):
+            player.respawn_dead_at = None
+            return
+
+        if getattr(player, 'respawn_dead_at', None) is None:
+            self._start_player_respawn_timer(player, now_ms)
+            return
+
+        if should_auto_respawn(
+            getattr(player, 'respawn_dead_at', None),
+            now_ms,
+            self._has_living_teammate(player),
+            self.player_respawn_delay_ms,
+        ):
+            self._respawn_player(player)
 
     def events_skill_ui_test(self):
         for event in pygame.event.get():
@@ -2254,6 +1636,9 @@ class Game:
             previous_hurtbox = player.hurtbox.copy()
             player.update(dt, keys, self.groups)
             self._resolve_map_collision(player, previous_rect, previous_hurtbox)
+
+        for player in self.players:
+            self._update_player_respawn_state(player)
 
         # update enemies
         for e in list(self.enemies):
@@ -3220,7 +2605,11 @@ class Game:
 
         if player.hp <= 0:
             dead_surf = font.render("DEAD", True, (255, 80, 80))
-            self.screen.blit(dead_surf, (x + 8, y + 17))
+            self.screen.blit(dead_surf, (x + 8, y + 78))
+            if getattr(player, 'respawn_dead_at', None) is not None and self._has_living_teammate(player):
+                remaining = max(0.0, (player.respawn_dead_at + self.player_respawn_delay_ms - pygame.time.get_ticks()) / 1000.0)
+                respawn_text = font.render(f"RESPAWN {remaining:.1f}s", True, (255, 215, 120))
+                self.screen.blit(respawn_text, (x + 8, y + 96))
         elif self._is_berserk_active(player):
             remaining = max(0.0, (player.berserk_until - pygame.time.get_ticks()) / 1000.0)
             ratio = max(0.0, min(1.0, remaining * 1000.0 / BERSERK_VIAL_DURATION_MS))

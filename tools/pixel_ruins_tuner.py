@@ -8,7 +8,7 @@ import json
 
 import pygame
 
-from pixel_ruins_map import LAYOUT_PATH, OVERVIEW_PATH, TEXTURE_PATHS
+from tools.pixel_ruins_map import LAYOUT_PATH, OVERVIEW_PATH, TEXTURE_PATHS
 
 
 WINDOW_W, WINDOW_H = 1280, 720

@@ -2,7 +2,7 @@ import json
 import os
 import pygame
 
-from entities import SkillIcon
+from entities.core import SkillIcon
 
 WIDTH = 1200
 HEIGHT = 680
